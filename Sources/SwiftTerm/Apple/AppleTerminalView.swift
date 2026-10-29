@@ -441,22 +441,24 @@ extension TerminalView {
     /// Computes how to center `glyph` within its `columnWidth`-cell slot (and
     /// scale it down if its ink overflows). Returns ``GlyphSlotFit/identity`` for
     /// ordinary single-cell glyphs, so Latin text in a monospace font is rendered
-    /// exactly as before and the hot path stays untouched. Shared by the
-    /// CoreGraphics and Metal glyph renderers so they stay pixel-consistent.
+    /// exactly as before; a single-cell glyph is only fitted when its advance
+    /// overflows the cell (``overflowsSingleCell(advance:)``). Shared by the
+    /// CoreGraphics and Metal glyph renderers so they stay pixel-consistent;
+    /// the Metal text pass still only fits wide cells.
     func glyphSlotFit (font: CTFont, glyph: CGGlyph, columnWidth: Int) -> GlyphSlotFit
     {
-        // Only wide cells need adjusting: a single-width glyph in a monospace
-        // font already fills its cell, so we skip the metric lookups entirely.
-        guard columnWidth >= 2, cellDimension != nil else { return .identity }
+        guard cellDimension != nil else { return .identity }
 
         let cellWidth = cellDimension.width
         let cellHeight = cellDimension.height
-        let slotWidth = CGFloat(columnWidth) * cellWidth
+        let slotWidth = CGFloat(max(1, columnWidth)) * cellWidth
 
         var g = glyph
         var advance = CGSize.zero
         CTFontGetAdvancesForGlyphs(font, .horizontal, &g, &advance, 1)
         guard advance.width > 0 else { return .identity }
+        // A single-width glyph in a monospace font already fills its cell.
+        guard columnWidth >= 2 || overflowsSingleCell(advance: advance.width) else { return .identity }
 
         var ink = CGRect.zero
         CTFontGetBoundingRectsForGlyphs(font, .horizontal, &g, &ink, 1)
@@ -483,6 +485,55 @@ extension TerminalView {
         }
 
         return GlyphSlotFit(dx: dx, dy: dy, scale: scale)
+    }
+
+    /// True when a glyph advance is wider than one cell. A one-column character
+    /// can still map to a two-cell glyph: D2Coding draws ①…⑳ (East Asian
+    /// Ambiguous, so one column) with a full-width advance, which painted over
+    /// the next cell. The half-point tolerance absorbs the device-pixel
+    /// snapping of the cell width, so ordinary monospace glyphs never qualify.
+    func overflowsSingleCell (advance: CGFloat) -> Bool
+    {
+        return advance > cellDimension.width + 0.5
+    }
+
+    /// Indices of the glyphs in `run`, from a single-width segment, whose
+    /// advance overflows their cell. Only a glyph alone in its cell qualifies:
+    /// combining marks stay on their base, and a ligature keeps its multi-cell
+    /// span. Reads the run's own advances, so ordinary text costs one
+    /// comparison per glyph.
+    fileprivate func singleCellOverflowGlyphs (run: CTRun, glyphCount: Int, segment: ViewLineSegment) -> [Int]
+    {
+        var result: [Int] = []
+        var stringIndices: [CFIndex] = []
+        let runRange = CTRunGetStringRange(run)
+
+        func scan (_ advances: UnsafePointer<CGSize>) {
+            for i in 0..<glyphCount where overflowsSingleCell(advance: advances[i].width) {
+                if stringIndices.isEmpty {
+                    stringIndices = [CFIndex](repeating: 0, count: glyphCount)
+                    CTRunGetStringIndices(run, CFRange(), &stringIndices)
+                }
+                let start = stringIndices[i]
+                let end = i + 1 < glyphCount ? stringIndices[i + 1] : runRange.location + runRange.length
+                let cell = segment.cellOrdinal(forUTF16: start)
+                if end > start
+                    && segment.cellOrdinal(forUTF16: end - 1) == cell
+                    && (i == 0 || segment.cellOrdinal(forUTF16: stringIndices[i - 1]) != cell)
+                    && (i + 1 == glyphCount || segment.cellOrdinal(forUTF16: stringIndices[i + 1]) != cell) {
+                    result.append(i)
+                }
+            }
+        }
+
+        if let advances = CTRunGetAdvancesPtr(run) {
+            scan(advances)
+        } else {
+            var advances = [CGSize](repeating: .zero, count: glyphCount)
+            CTRunGetAdvances(run, CFRange(), &advances)
+            advances.withUnsafeBufferPointer { scan($0.baseAddress!) }
+        }
+        return result
     }
 
     func mapColor (color: Attribute.Color, isFg: Bool, isBold: Bool, useBrightColors: Bool = true) -> TTColor
@@ -2102,15 +2153,19 @@ extension TerminalView {
 
                     // Center full-width (CJK) and substituted glyphs within their
                     // multi-cell slot instead of pinning them to the cell's left
-                    // edge. `positions` stays grid-aligned for the decorations
-                    // below; only `glyphPositions` is shifted/scaled.
+                    // edge, and fit single-width glyphs that are wider than
+                    // their cell. `positions` stays grid-aligned for the
+                    // decorations below; only `glyphPositions` is shifted/scaled.
                     let ctRunFont = runFont as CTFont
                     var glyphPositions = positions
                     var scaledFits: [GlyphSlotFit]? = nil
-                    if prepared.segment.columnWidth >= 2 {
+                    let fittedGlyphs = prepared.segment.columnWidth >= 2
+                        ? Array(0..<runGlyphsCount)
+                        : singleCellOverflowGlyphs(run: run, glyphCount: runGlyphsCount, segment: prepared.segment)
+                    if !fittedGlyphs.isEmpty {
                         var computed = [GlyphSlotFit](repeating: .identity, count: runGlyphsCount)
                         var anyScaled = false
-                        for i in 0..<runGlyphsCount {
+                        for i in fittedGlyphs {
                             let fit = glyphSlotFit(font: ctRunFont, glyph: runGlyphs[i], columnWidth: prepared.segment.columnWidth)
                             computed[i] = fit
                             glyphPositions[i].x += fit.dx
