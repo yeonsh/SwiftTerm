@@ -154,8 +154,6 @@ public final class Buffer {
     var savedOriginMode: Bool = false
     /// Saved state for the origin mode
     var savedMarginMode: Bool = false
-    /// Saved state for the wrap around mode
-    var savedWraparound: Bool = false
     /// Saved state for the reverse wrap around mode
     var savedReverseWraparound: Bool = false
 
@@ -742,7 +740,6 @@ public final class Buffer {
         savedCharset = CharSets.defaultCharset
         marginRight = cols-1
         marginLeft = 0
-        savedWraparound = false
         savedOriginMode = false
         savedMarginMode = false
         savedReverseWraparound = false

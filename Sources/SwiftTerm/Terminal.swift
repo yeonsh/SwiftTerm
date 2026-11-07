@@ -3548,7 +3548,8 @@ open class Terminal {
         charset = buffer.savedCharset
         originMode = buffer.savedOriginMode
         setMarginMode(buffer.savedMarginMode)
-        setWraparound(buffer.savedWraparound)
+        // Autowrap (DECAWM) is not part of the saved cursor, as in xterm and Ghostty.
+        // Restoring it made an unpaired restore (e.g. ?1049l) turn autowrap off.
         reverseWraparound = buffer.savedReverseWraparound
     }
 
@@ -4083,7 +4084,6 @@ open class Terminal {
         buffer.savedY = buffer.y
         buffer.savedAttr = curAttr
         buffer.savedCharset = charset
-        buffer.savedWraparound = wraparound
         buffer.savedOriginMode = originMode
         buffer.savedMarginMode = marginMode
         buffer.savedReverseWraparound = reverseWraparound
