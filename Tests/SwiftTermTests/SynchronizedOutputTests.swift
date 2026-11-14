@@ -119,6 +119,50 @@ final class SynchronizedOutputTests {
         #expect(!delegate.scrolledPositions.isEmpty)
     }
 
+    /// Ending sync must only leave the rows touched during sync dirty, not the
+    /// whole screen (TUIs wrap every frame in BSU/ESU).
+    @Test func testEndingSyncOnlyRefreshesRowsChangedDuringSync() {
+        let terminal = Terminal(
+            delegate: TestDelegate(),
+            options: TerminalOptions(cols: 20, rows: 10, scrollback: 0)
+        )
+        let esc = "\u{1b}"
+
+        terminal.feed(text: "\(esc)[2J\(esc)[H")
+        terminal.clearUpdateRange()
+
+        terminal.feed(text: "\(esc)[?2026h")
+        terminal.feed(text: "\(esc)[5;1HX")
+        terminal.feed(text: "\(esc)[?2026l")
+
+        // setCursor also marks the row the cursor left (row 0), so the range is
+        // 0...4 rather than exactly 4...4. What matters is that it is not 0...9.
+        let range = terminal.getUpdateRange()
+        #expect(range?.endY == 4)
+        #expect(range?.startY ?? 0 <= 4)
+    }
+
+    /// A scroll during sync records the scroll region, so it must still be
+    /// covered after sync ends.
+    @Test func testScrollDuringSyncStillRefreshesScrollRegion() {
+        let terminal = Terminal(
+            delegate: TestDelegate(),
+            options: TerminalOptions(cols: 20, rows: 10, scrollback: 0)
+        )
+        let esc = "\u{1b}"
+
+        terminal.feed(text: "\(esc)[2J\(esc)[H")
+        terminal.clearUpdateRange()
+
+        terminal.feed(text: "\(esc)[?2026h")
+        terminal.feed(text: "\(esc)[10;1HA\r\nB")
+        terminal.feed(text: "\(esc)[?2026l")
+
+        let range = terminal.getUpdateRange()
+        #expect(range?.startY == 0)
+        #expect(range?.endY == 9)
+    }
+
     // MARK: - View-level regression tests
 
 #if os(macOS)

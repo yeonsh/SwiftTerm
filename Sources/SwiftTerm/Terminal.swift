@@ -6821,7 +6821,9 @@ open class Terminal {
         synchronizedOutputActive = false
         synchronizedOutputTimeoutItem?.cancel()
         synchronizedOutputTimeoutItem = nil
-        refresh (startRow: 0, endRow: rows - 1)
+        // The view does not clear the update range while sync is active, so the
+        // rows changed during sync are still pending here. A full refresh made
+        // TUIs that wrap every frame in BSU/ESU redraw the whole screen each frame.
         tdel?.synchronizedOutputChanged(source: self, active: false)
     }
 
